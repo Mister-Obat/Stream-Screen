@@ -11,6 +11,16 @@ import collections
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import pygame
 
+import ctypes
+# Création d'un ID unique basé sur le nom du fichier du script
+# Cela permet à chaque app (ex: 'StreamScreen.pyw', 'stream_receiver.py') d'avoir sa propre icône dans la barre des tâches
+try:
+    script_name = os.path.splitext(os.path.basename(__file__))[0]
+    myappid = f'obat.{script_name}.v1'
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+except Exception:
+    pass
+
 # --- CONFIG ---
 DEFAULT_PORT = 5555
 UDP_PORT = 5555

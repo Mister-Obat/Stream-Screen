@@ -1,1 +1,15 @@
-{"monitor_idx": 1, "backend": "DXCam", "fps": 120, "quality": 52, "resolution": "720p", "pi_ip": "192.168.50.2", "pi_user": "obat", "pi_pass": "Tibili24", "pi_path": "Desktop/stream_receiver.py"}
+{
+    "monitor_idx": 1,
+    "backend": "DXCam",
+    "fps": 30,
+    "quality": 25,
+    "resolution": "720p",
+    "remember_ip": true,
+    "remember_user": true,
+    "remember_pass": true,
+    "remember_path": true,
+    "pi_ip": "192.168.50.2",
+    "pi_user": "obat",
+    "pi_path": "Desktop/stream_receiver.py",
+    "pi_pass_enc": "GwsDHT8dQFE="
+}

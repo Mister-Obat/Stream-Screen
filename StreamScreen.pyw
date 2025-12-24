@@ -1,6 +1,7 @@
 
 import customtkinter as ctk
 import tkinter as tk
+import base64
 from tkinter import messagebox
 import socket
 import dxcam
@@ -14,8 +15,19 @@ import logging
 import mss
 import paramiko
 import os
-# ctypes for cursor
+import ctypes
 from ctypes import windll, Structure, c_long, c_uint, c_void_p, byref, sizeof
+from PIL import Image, ImageTk
+
+# --- TASKBAR ICON PERSISTENCE (Windows) ---
+# Création d'un ID unique basé sur le nom du fichier du script
+# Cela permet à chaque app (ex: 'StreamScreen.pyw', 'Autre.pyw') d'avoir sa propre icône dans la barre des tâches
+try:
+    script_name = os.path.splitext(os.path.basename(__file__))[0]
+    myappid = f'obat.{script_name}.v1'
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+except Exception:
+    pass
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -32,6 +44,32 @@ logger = logging.getLogger("SenderGUI")
 DEFAULT_PORT = 5555
 UDP_PORT = 5555
 CONFIG_FILE = "stream_config.json"
+
+# --- GLOBAL STATE ---
+# --- SECURITY ---
+class SimpleCrypto:
+    # Clé simple pour l'obfuscation locale (évite le clair textuel)
+    KEY = "ObatStreamSecureKey2025" 
+    
+    @staticmethod
+    def _xor(data, key):
+        return ''.join(chr(ord(c) ^ ord(key[i % len(key)])) for i, c in enumerate(data))
+
+    @staticmethod
+    def encrypt(text):
+        if not text: return ""
+        try:
+            xor_result = SimpleCrypto._xor(text, SimpleCrypto.KEY)
+            return base64.b64encode(xor_result.encode()).decode()
+        except: return text
+
+    @staticmethod
+    def decrypt(encoded):
+        if not encoded: return ""
+        try:
+            decoded_xor = base64.b64decode(encoded).decode()
+            return SimpleCrypto._xor(decoded_xor, SimpleCrypto.KEY)
+        except: return ""
 
 # --- GLOBAL STATE ---
 class StreamState:
@@ -52,10 +90,15 @@ class StreamState:
         self.pi_pass = "raspberry"
         self.pi_path = "Desktop/stream_receiver.py"
         
+        # Remember Flags
+        self.remember_ip = True
+        self.remember_user = True
+        self.remember_pass = True
+        self.remember_path = True
+        
         # Runtime Stats
         self.current_mbps = 0.0
         self.current_fps = 0
-
 
     def save(self):
         data = {
@@ -64,14 +107,28 @@ class StreamState:
             "fps": self.fps,
             "quality": self.quality,
             "resolution": self.resolution,
-            "pi_ip": self.pi_ip,
-            "pi_user": self.pi_user,
-            "pi_pass": self.pi_pass,
-            "pi_path": self.pi_path
+            
+            # Save flags
+            "remember_ip": self.remember_ip,
+            "remember_user": self.remember_user,
+            "remember_pass": self.remember_pass,
+            "remember_path": self.remember_path,
+            
+            # Save data if remembered
+            "pi_ip": self.pi_ip if self.remember_ip else "",
+            "pi_user": self.pi_user if self.remember_user else "",
+            "pi_path": self.pi_path if self.remember_path else ""
         }
+        
+        # Encrypt password if remembered
+        if self.remember_pass and self.pi_pass:
+            data["pi_pass_enc"] = SimpleCrypto.encrypt(self.pi_pass)
+        else:
+            data["pi_pass_enc"] = ""
+
         try:
             with open(CONFIG_FILE, 'w') as f:
-                json.dump(data, f)
+                json.dump(data, f, indent=4)
         except: pass
 
     def load(self):
@@ -84,10 +141,22 @@ class StreamState:
                     self.fps = data.get("fps", 60)
                     self.quality = data.get("quality", 50)
                     self.resolution = data.get("resolution", "720p")
-                    self.pi_ip = data.get("pi_ip", "")
-                    self.pi_user = data.get("pi_user", "pi")
-                    self.pi_pass = data.get("pi_pass", "raspberry")
-                    self.pi_path = data.get("pi_path", "Desktop/stream_receiver.py")
+                    
+                    self.remember_ip = data.get("remember_ip", True)
+                    self.remember_user = data.get("remember_user", True)
+                    self.remember_pass = data.get("remember_pass", True)
+                    self.remember_path = data.get("remember_path", True)
+                    
+                    if self.remember_ip: self.pi_ip = data.get("pi_ip", "")
+                    if self.remember_user: self.pi_user = data.get("pi_user", "pi")
+                    if self.remember_path: self.pi_path = data.get("pi_path", "Desktop/stream_receiver.py")
+                    
+                    # Decrypt pass
+                    enc_pass = data.get("pi_pass_enc", "")
+                    if self.remember_pass and enc_pass:
+                        self.pi_pass = SimpleCrypto.decrypt(enc_pass)
+                    elif not self.remember_pass:
+                        self.pi_pass = ""
             except: pass
 
 state = StreamState()
@@ -375,6 +444,15 @@ class StreamApp(ctk.CTk):
         ctk.set_appearance_mode("Dark")
         ctk.set_default_color_theme("blue")
         
+        # Icon
+        # Icon
+        try:
+            icon_path = "stream4.ico"
+            if os.path.exists(icon_path):
+                self.iconbitmap(icon_path)
+        except Exception as e:
+            logger.error(f"Failed to load icon: {e}")
+        
         # Header
         self.lbl_title = ctk.CTkLabel(self, text="Stream Screen", font=("Roboto", 24, "bold"))
         self.lbl_title.pack(pady=20)
@@ -445,19 +523,54 @@ class StreamApp(ctk.CTk):
         # === TAB: PI ===
         ctk.CTkLabel(self.tab_pi, text="Configuration SSH", font=("Arial", 14, "bold")).pack(pady=10)
         
+        # IP
+        frm_ip = ctk.CTkFrame(self.tab_pi, fg_color="transparent")
+        frm_ip.pack(fill="x", padx=10, pady=(5,0))
+        ctk.CTkLabel(frm_ip, text="Adresse ipv4 eth0").pack(side="left")
+        self.chk_ip = ctk.CTkCheckBox(frm_ip, text="Mémoriser", width=20, height=20, font=("Arial", 10))
+        self.chk_ip.pack(side="right")
+        if state.remember_ip: self.chk_ip.select()
+        else: self.chk_ip.deselect()
+        
         self.ent_ip = ctk.CTkEntry(self.tab_pi, placeholder_text="IP du Raspberry Pi")
         self.ent_ip.pack(fill="x", padx=10, pady=5)
         if state.pi_ip: self.ent_ip.insert(0, state.pi_ip)
+        
+        # User
+        frm_user = ctk.CTkFrame(self.tab_pi, fg_color="transparent")
+        frm_user.pack(fill="x", padx=10, pady=(5,0))
+        ctk.CTkLabel(frm_user, text="id de connexion").pack(side="left")
+        self.chk_user = ctk.CTkCheckBox(frm_user, text="Mémoriser", width=20, height=20, font=("Arial", 10))
+        self.chk_user.pack(side="right")
+        if state.remember_user: self.chk_user.select()
+        else: self.chk_user.deselect()
         
         self.ent_user = ctk.CTkEntry(self.tab_pi, placeholder_text="Utilisateur (ex: pi)")
         self.ent_user.pack(fill="x", padx=10, pady=5)
         self.ent_user.insert(0, state.pi_user)
 
+        # Pass
+        frm_pass = ctk.CTkFrame(self.tab_pi, fg_color="transparent")
+        frm_pass.pack(fill="x", padx=10, pady=(5,0))
+        ctk.CTkLabel(frm_pass, text="mot de passe").pack(side="left")
+        self.chk_pass = ctk.CTkCheckBox(frm_pass, text="Mémoriser", width=20, height=20, font=("Arial", 10))
+        self.chk_pass.pack(side="right")
+        if state.remember_pass: self.chk_pass.select()
+        else: self.chk_pass.deselect()
+
         self.ent_pass = ctk.CTkEntry(self.tab_pi, placeholder_text="Mot de passe", show="*")
         self.ent_pass.pack(fill="x", padx=10, pady=5)
         self.ent_pass.insert(0, state.pi_pass)
         
-        ctk.CTkLabel(self.tab_pi, text="Chemin fichier python :").pack(anchor="w", padx=10, pady=(10,0))
+        # Path
+        frm_path = ctk.CTkFrame(self.tab_pi, fg_color="transparent")
+        frm_path.pack(fill="x", padx=10, pady=(10,0))
+        ctk.CTkLabel(frm_path, text="Chemin fichier python :").pack(side="left")
+        self.chk_path = ctk.CTkCheckBox(frm_path, text="Mémoriser", width=20, height=20, font=("Arial", 10))
+        self.chk_path.pack(side="right")
+        if state.remember_path: self.chk_path.select()
+        else: self.chk_path.deselect()
+
         self.ent_path = ctk.CTkEntry(self.tab_pi, placeholder_text="ex: Desktop/stream_receiver.py")
         self.ent_path.pack(fill="x", padx=10, pady=5)
         self.ent_path.insert(0, state.pi_path)
@@ -524,6 +637,12 @@ class StreamApp(ctk.CTk):
         state.pi_user = self.ent_user.get()
         state.pi_pass = self.ent_pass.get()
         state.pi_path = self.ent_path.get()
+        
+        state.remember_ip = bool(self.chk_ip.get())
+        state.remember_user = bool(self.chk_user.get())
+        state.remember_pass = bool(self.chk_pass.get())
+        state.remember_path = bool(self.chk_path.get())
+        
         state.save()
 
     def toggle_stream(self):
